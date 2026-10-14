@@ -46,6 +46,7 @@ from .const import (
     ATTR_SETTINGS,
     ATTR_STREAMS,
     CONF_EXTRA_PART_WAIT_TIME,
+    CONF_HLS_EXTENSION_PICKY,
     CONF_LL_HLS,
     CONF_PART_DURATION,
     CONF_RTSP_TRANSPORT,
@@ -173,6 +174,10 @@ def _convert_stream_options(
         pyav_options["rtsp_transport"] = rtsp_transport
     if stream_options.get(CONF_USE_WALLCLOCK_AS_TIMESTAMPS):
         pyav_options["use_wallclock_as_timestamps"] = "1"
+    if CONF_HLS_EXTENSION_PICKY in stream_options:
+        pyav_options["extension_picky"] = (
+            "1" if stream_options[CONF_HLS_EXTENSION_PICKY] else "0"
+        )
 
     # For RTSP streams, prefer TCP
     if isinstance(stream_source, str) and stream_source[:7] == "rtsp://":
@@ -644,6 +649,7 @@ STREAM_OPTIONS_SCHEMA: Final = probatio.Schema(
         probatio.Optional(CONF_RTSP_TRANSPORT): probatio.In(RTSP_TRANSPORTS),
         probatio.Optional(CONF_USE_WALLCLOCK_AS_TIMESTAMPS): bool,
         probatio.Optional(CONF_EXTRA_PART_WAIT_TIME): cv.positive_float,
+        probatio.Optional(CONF_HLS_EXTENSION_PICKY): bool,
         probatio.Optional(CONF_VERIFY_SSL): bool,
     }
 )

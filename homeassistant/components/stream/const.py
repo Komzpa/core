@@ -50,6 +50,7 @@ CONF_SEGMENT_DURATION = "segment_duration"
 
 ATTR_PREFER_TCP = "prefer_tcp"
 CONF_RTSP_TRANSPORT = "rtsp_transport"
+CONF_HLS_EXTENSION_PICKY = "hls_extension_picky"
 # The first dict entry below may be used as the default when populating options
 RTSP_TRANSPORTS = {
     "tcp": "TCP",

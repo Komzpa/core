@@ -1,6 +1,9 @@
 """Test stream init."""
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import islice
 import logging
+from threading import Thread
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,13 +18,46 @@ from homeassistant.components.stream import (
     async_check_stream_client_error,
     create_stream,
 )
-from homeassistant.components.stream.const import ATTR_PREFER_TCP, DOMAIN
+from homeassistant.components.stream.const import (
+    ATTR_PREFER_TCP,
+    CONF_HLS_EXTENSION_PICKY,
+    DOMAIN,
+)
 from homeassistant.const import CONF_VERIFY_SSL, EVENT_LOGGING_CHANGED
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 
-from .common import dynamic_stream_settings
+from .common import dynamic_stream_settings, generate_h264_video
+
+
+class _ExtensionlessHlsHandler(BaseHTTPRequestHandler):
+    """Serve an HLS playlist with one extensionless MPEG-TS segment."""
+
+    playlist: bytes
+    segment: bytes
+
+    def do_GET(self) -> None:
+        """Handle GET requests."""
+        if self.path == "/playlist.m3u8":
+            content_type = "application/vnd.apple.mpegurl"
+            body = self.playlist
+        elif self.path == "/segment0":
+            content_type = "video/MP2T"
+            body = self.segment
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Do not log HTTP requests from PyAV during tests."""
 
 
 async def test_stream_not_setup(hass: HomeAssistant, h264_video) -> None:
@@ -170,6 +206,15 @@ async def test_try_open_stream_error(
                 "use_wallclock_as_timestamps": "1",
             },
         ),
+        (
+            {CONF_HLS_EXTENSION_PICKY: False},
+            {
+                "extension_picky": "0",
+                "rtsp_flags": "prefer_tcp",
+                "stimeout": "5000000",
+                "tls_verify": "0",
+            },
+        ),
     ],
 )
 async def test_convert_stream_options(
@@ -190,6 +235,72 @@ async def test_convert_stream_options(
         source, options=expected_pyav_options, timeout=SOURCE_TIMEOUT
     )
     container_mock.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("extension_picky", "pyav_extension_picky"),
+    [
+        pytest.param(True, "1", id="enabled"),
+        pytest.param(False, "0", id="disabled"),
+    ],
+)
+async def test_hls_extension_picky_option(
+    hass: HomeAssistant, extension_picky: bool, pyav_extension_picky: str
+) -> None:
+    """Test the hls_extension_picky stream option controls PyAV extension_picky."""
+    await async_setup_component(hass, DOMAIN, {"stream": {}})
+    source = "https://example.com/playlist.m3u8"
+
+    with patch("av.open") as open_mock:
+        await async_check_stream_client_error(
+            hass, source, {CONF_HLS_EXTENSION_PICKY: extension_picky}
+        )
+
+    open_mock.assert_called_once_with(
+        source,
+        options={"extension_picky": pyav_extension_picky, "tls_verify": "0"},
+        timeout=SOURCE_TIMEOUT,
+    )
+
+
+@pytest.mark.usefixtures("socket_enabled")
+def test_hls_extension_picky_allows_extensionless_segments() -> None:
+    """Test extension_picky allows HLS playlists with extensionless segments."""
+    _ExtensionlessHlsHandler.segment = generate_h264_video(
+        container_format="mpegts", duration=1
+    ).getvalue()
+    _ExtensionlessHlsHandler.playlist = b"\n".join(
+        (
+            b"#EXTM3U",
+            b"#EXT-X-VERSION:3",
+            b"#EXT-X-TARGETDURATION:1",
+            b"#EXT-X-MEDIA-SEQUENCE:0",
+            b"#EXTINF:1.0,",
+            b"segment0",
+            b"#EXT-X-ENDLIST",
+            b"",
+        )
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ExtensionlessHlsHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/playlist.m3u8"
+
+    try:
+        with pytest.raises(av.error.InvalidDataError):
+            av.open(url).close()
+        with pytest.raises(av.error.InvalidDataError):
+            av.open(url, options={"allowed_extensions": "ALL"}).close()
+
+        container = av.open(url, options={"extension_picky": "0"})
+        try:
+            assert len(list(islice(container.demux(video=0), 3))) == 3
+        finally:
+            container.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 @pytest.mark.parametrize(
