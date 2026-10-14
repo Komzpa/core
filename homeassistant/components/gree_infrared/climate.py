@@ -299,6 +299,8 @@ class GreeAcClimateEntity(
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.SWING_MODE
         | ClimateEntityFeature.SWING_HORIZONTAL_MODE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
     )
     _attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
     _attr_swing_modes = [SWING_OFF, SWING_ON]
@@ -739,6 +741,11 @@ class GreeAcClimateEntity(
     def _is_yap1f(self) -> bool:
         """Return whether the YAP1F wire profile is selected."""
         return self._model is GreeAcModel.YAP1F
+
+    @override
+    async def async_turn_on(self) -> None:
+        """Resume the last active mode instead of selecting a heating default."""
+        await self.async_set_hvac_mode(self._last_active_hvac_mode)
 
     @override
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
